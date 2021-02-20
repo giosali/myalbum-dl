@@ -33,8 +33,8 @@ positional arguments:
     
 optional arguments:
     -h, --help                      show this help message and exit
-    --debug [0 or 1]                option to enable debugging
-    -s, --separate [0 or 1]         separate media types into their own directories
+    --debug                         option to enable debugging
+    -s, --separate                  separate media types into their own directories
 ```
 
 For example, if you want files to be separated by media type into their own directories, you can pass the `separate` argument like so:
