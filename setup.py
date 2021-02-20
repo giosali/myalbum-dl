@@ -17,7 +17,7 @@ REQUIREMENTS = ['requests']
 
 setuptools.setup(
     name='myalbum-dl',
-    version='0.2.0',
+    version='0.3.0',
     author='Giovanni Salinas',
     author_email='gbs3@protonmail.com',
     description='A command line tool for downloading albums from MyAlbum',
