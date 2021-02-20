@@ -1,31 +1,24 @@
-import os
-import sys
-import re
 import argparse
 import concurrent.futures
-import logging
-import time
-from threading import Thread, Event
-import platform
-import shutil
 import glob
+import logging
 import mimetypes
+import os
+import platform
+import re
+import shutil
+import sys
+import time
+import urllib.parse
+from threading import Thread, Event
 
 import requests
 
-from myalbum_dl.constants import (
-    HEADERS,
-    DOMAINS
-)
+from .constants import USER_AGENT, DOMAINS, COLORS
 if platform.system() == 'Windows':
-    from myalbum_dl.constants import (
-        WIN_SPINNERS as SPINNERS,
-        WIN_COLORS as COLORS)
+    from .constants import WIN_SPINNERS as SPINNERS
 else:
-    from myalbum_dl.constants import (
-        SPINNERS,
-        COLORS
-    )
+    from .constants import SPINNERS
 
 
 class Logger:
@@ -49,66 +42,79 @@ class Logger:
             stream_handler.setFormatter(fmt=formatter)
             self.log.addHandler(stream_handler)
 
-    def debug(self, message):
+    def debug(self, message) -> None:
         self.log.debug(message)
 
-    def info(self, message):
+    def info(self, message) -> None:
         self.log.info(message)
 
-    def error(self, message):
+    def error(self, message) -> None:
         self.log.error(message)
 
 
 class MyAlbum(Logger):
-    def __init__(self,
-                 args,
-                 cwd=os.getcwd(),
-                 title=None,
-                 medias=[],
-                 total=0,
-                 count=0):
-        self.separate = args.separate
+    def __init__(self, args, cwd=os.getcwd(), title=None,
+                 s=None, medias=[], total=0, count=0):
         super().__init__(args.debug)
+        self.separate = args.separate
+        self.album_json = urllib.parse.urljoin(args.album + '/', 'json')
         self.cwd = cwd
-        HEADERS['referer'] = args.album
-        self.headers = HEADERS
-        self.album_json = args.album + \
-            'json' if args.album.endswith('/') else args.album + '/json'
         self.title = title
+        self.s = s
         self.medias = medias
         self.total = total
         self.count = count
 
-    def scrape_album(self):
-        with requests.get(self.album_json, headers=self.headers) as r:
-            if not r.ok:
-                self.log.error(
-                    f'Unable to load album page——STATUS CODE: {r.status_code}')
-                sys.exit(0)
-        if r.ok:
-            content = r.json()
-            self.title = self.clean_text(content['album']['title'])
-            itemdata = content['itemdata']
-            ids = list(itemdata)
-            for id_ in ids:
-                media = itemdata[id_]
-                if media['type'] == 10:
-                    media_url = media['sizes'][-1][-2]
-                    filename = media['photo']['fileName'].rsplit('.', 1)[
-                        0] + '.mp4'
-                    self.medias.append((media_url, filename))
-                elif media['type'] == 1:
-                    media_url = media['sizes'][-1][-2]
-                    filename = media['fileName']
-                    self.medias.append((media_url, filename))
-                else:
-                    pass
-            self.log.info(f"{self.title} : {content['album']['subTitle']}")
-            self.total = len(self.medias)
+    def scrape_album(self) -> None:
+        self.create_session()
+        r = self.get_response()
+        self.parse_response(r.json())
+        self.log.info(f"{self.title}")
+        self.total = len(self.medias)
 
-    def prepare_download(self):
+    def create_session(self) -> None:
+        s = requests.Session()
+        headers = {
+            'user-agent': USER_AGENT,
+            'accept': 'application/json',
+            'accept-encoding': 'gzip, deflate, br',
+            'x-requested-with': 'XMLHttpRequest',
+            'referer': self.album_json.rsplit('/json', 1)[0]
+        }
+        s.headers.update(headers)
+        self.s = s
+
+    def get_response(self) -> requests.models.Response or None:
+        with self.s.get(self.album_json) as r:
+            if r.ok:
+                return r
+            else:
+                self.log.error(
+                    f"Unable to get album——STATUS CODE: {r.status_code}")
+                return
+
+    def parse_response(self, response) -> None:
+        self.title = self.clean_text(response['album']['title'])
+        itemdata = response['itemdata']
+        ids = list(itemdata)
+        for id_ in ids:
+            media = itemdata[id_]
+            if media['type'] == 10:
+                media_url = media['sizes'][-1][-2]
+                filename = media['photo']['fileName'].rsplit('.', 1)[
+                    0] + '.mp4'
+                self.medias.append((media_url, filename))
+            elif media['type'] == 1:
+                media_url = media['sizes'][-1][-2]
+                filename = media['fileName']
+                self.medias.append((media_url, filename))
+            else:
+                continue
+
+    def prepare_download(self) -> None:
         if self.medias:
-            self.headers['accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+            self.s.headers.update(
+                {'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'})
             os.makedirs(os.path.join(self.cwd, self.title), exist_ok=True)
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 futures = {
@@ -118,15 +124,15 @@ class MyAlbum(Logger):
             if self.separate:
                 self.separate_media()
         else:
-            self.log.info(f'Found 0 items in album——quitting program')
-            sys.exit(0)
+            self.log.info(f"Found 0 items in album——quitting program")
+            return
 
-    def download(self, media):
+    def download(self, media) -> None:
         count = 0
         while True:
             url = DOMAINS[count] + media[0]
             filename = media[1]
-            with requests.get(url, headers=self.headers) as r:
+            with self.s.get(url) as r:
                 if not r.ok:
                     count += 1
                 else:
@@ -137,9 +143,9 @@ class MyAlbum(Logger):
                     break
             if count > 2:
                 self.log.error(
-                    f'Unable to download media ({filename})——STATUS CODE: {r.status_code}')
+                    f"Unable to download media ({filename})——STATUS CODE: {r.status_code}")
 
-    def separate_media(self):
+    def separate_media(self) -> None:
         dir_ = os.path.join(self.cwd, self.title)
         files = glob.glob(dir_ + '\\*.*')
         if files:
@@ -168,31 +174,33 @@ class MyAlbum(Logger):
                     shutil.move(os.path.join(dir_, file), video_dir)
         return
 
-    def spinner(self, event):
+    def spinner(self, event) -> None:
         while True:
             for color in COLORS:
                 for spinner in SPINNERS:
                     if event.is_set():
-                        return None
+                        return
                     print(f' {color[0]}{spinner}{color[1]} [{self.count}/{self.total}]',
                           end='\r', flush=True)
                     time.sleep(0.1)
 
     @staticmethod
-    def clean_text(text):
-        pattern = re.compile(r'[:./\\\\]')
+    def clean_text(text) -> str:
+        pattern = re.compile(r'[\\/:*?"<>|]')
         cleaned_text = re.sub(pattern, '_', text)
         return cleaned_text
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        'album', type=str, help='URL of the album to scrape')
+        'album', type=str, help="URL of the album to scrape")
     parser.add_argument(
-        '--debug', type=int, help='option to enable debugging', choices=[0, 1], nargs='?', const=1, default=0, required=False)
+        '--debug', help="option to enable debugging", action='store_true')
     parser.add_argument(
-        '-s', '--separate', type=int, help='separate media types into their own directories', nargs='?', const=1, default=0, choices=[0, 1], required=False)
+        '-s', '--separate', help="separate media types into their own directories", action='store_true')
+    if platform.system() == 'Windows':
+        os.system('color')
     args = parser.parse_args()
     myalbum = MyAlbum(args)
     myalbum.scrape_album()
